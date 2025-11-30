@@ -71,8 +71,13 @@ use tokio::sync::RwLock;
 
 use reqwest::{Method, RequestBuilder, Response};
 use url::Url;
+//kyber
+use pqcrypto_kyber::kyber512;
+use pqcrypto_traits::kem::{PublicKey as KyberPublicKeyTrait, SecretKey as KyberSecretKeyTrait, SharedSecret};
+use base64::{encode, decode};
+use pqcrypto_traits::kem::Ciphertext;
 
-pub use error::*;
+
 pub use event::*;
 pub use program::*;
 pub use report::*;
@@ -82,6 +87,9 @@ pub use timeline::*;
 pub use ven::*;
 
 use crate::error::Result;
+//error
+use crate::error::Error;
+
 use openleadr_wire::ven::{VenContent, VenId};
 pub(crate) use openleadr_wire::{
     event::EventContent,
@@ -492,7 +500,38 @@ impl Client {
         };
         Self::new(client_ref)
     }
+    //kyber functions in here 
+    
+   // Generate a Kyber key pair (public + secret)
+pub fn generate_kyber_keypair() -> (String, Vec<u8>) {
+    let (public, secret) = kyber512::keypair();
+    let public_b64 = encode(public.as_bytes());  // Public key - encode base64
+    (public_b64, secret.as_bytes().to_vec())    // Secret key - raw byte 
+}
 
+// Encrypt a message using the Kyber public key
+pub fn kyber_encrypt(public_b64: &str, message: &[u8]) -> Vec<u8> {
+    let public_bytes = decode(public_b64).expect("Invalid base64 public key");
+    let public_key = kyber512::PublicKey::from_bytes(&public_bytes).expect("Invalid Kyber public key");
+    let (ciphertext, _) = kyber512::encapsulate(&public_key);  // encr
+    ciphertext.as_bytes().to_vec()  // Encrypt- byte 
+}
+
+    // Decrypt a ciphertext using the Kyber secret key
+pub fn kyber_decrypt(secret_bytes: &[u8], ciphertext_bytes: &[u8]) -> Vec<u8> {
+    // Create the secret key from the provided bytes
+    let secret_key = kyber512::SecretKey::from_bytes(secret_bytes).expect("Invalid Kyber secret key");
+    
+    // Create the ciphertext from the provided bytes
+    let ciphertext = kyber512::Ciphertext::from_bytes(ciphertext_bytes).expect("Invalid ciphertext");
+
+    // Decapsulate the shared secret using the ciphertext and secret key
+    let shared_secret = kyber512::decapsulate(&ciphertext, &secret_key);
+
+    // Return the shared secret as bytes
+    shared_secret.as_bytes().to_vec()
+}
+    
     fn new(client_ref: ClientRef) -> Self {
         Client {
             client_ref: Arc::new(client_ref),

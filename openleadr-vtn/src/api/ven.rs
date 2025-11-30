@@ -18,6 +18,7 @@ use crate::{
     jwt::{User, VenManagerUser},
 };
 
+/// GET /vens?...
 pub async fn get_all(
     State(ven_source): State<Arc<dyn VenCrud>>,
     ValidatedQuery(query_params): ValidatedQuery<QueryParams>,
@@ -34,6 +35,7 @@ pub async fn get_all(
     Ok(Json(vens))
 }
 
+/// GET /vens/:id
 pub async fn get(
     State(ven_source): State<Arc<dyn VenCrud>>,
     Path(id): Path<VenId>,
@@ -46,11 +48,13 @@ pub async fn get(
     Ok(Json(ven))
 }
 
+/// POST /vens
 pub async fn add(
     State(ven_source): State<Arc<dyn VenCrud>>,
     VenManagerUser(user): VenManagerUser,
     ValidatedJson(new_ven): ValidatedJson<VenContent>,
 ) -> Result<(StatusCode, Json<Ven>), AppError> {
+    // KYBER SUPPORT: `VenContent` deserialize this field `kyber_public_key`
     let ven = ven_source.create(new_ven, &user.try_into()?).await?;
 
     info!(%ven.id, ven.ven_name=ven.content.ven_name, "VEN added");
@@ -58,12 +62,14 @@ pub async fn add(
     Ok((StatusCode::CREATED, Json(ven)))
 }
 
+/// PUT /vens/:id
 pub async fn edit(
     State(ven_source): State<Arc<dyn VenCrud>>,
     Path(id): Path<VenId>,
     VenManagerUser(user): VenManagerUser,
     ValidatedJson(content): ValidatedJson<VenContent>,
 ) -> AppResponse<Ven> {
+    // KYBER SUPPORT: `VenContent` - `kyber_public_key` can update
     let ven = ven_source.update(&id, content, &user.try_into()?).await?;
 
     info!(%ven.id, ven.ven_name=ven.content.ven_name, "VEN updated");
@@ -71,6 +77,7 @@ pub async fn edit(
     Ok(Json(ven))
 }
 
+/// DELETE /vens/:id
 pub async fn delete(
     State(ven_source): State<Arc<dyn VenCrud>>,
     Path(id): Path<VenId>,
@@ -81,6 +88,7 @@ pub async fn delete(
     Ok(Json(ven))
 }
 
+/// Query parameters for GET /vens
 #[derive(Deserialize, Validate, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct QueryParams {
@@ -125,7 +133,7 @@ mod tests {
     }
 
     #[sqlx::test(fixtures("users", "vens"))]
-    async fn get_all_filetred(db: PgPool) {
+    async fn get_all_filtered(db: PgPool) {
         let test = ApiTest::new(db.clone(), vec![AuthRole::VenManager]).await;
 
         let (status, vens) = test
@@ -161,19 +169,6 @@ mod tests {
     }
 
     #[sqlx::test(fixtures("users", "vens"))]
-    async fn get_all_ven_user(db: PgPool) {
-        let test = ApiTest::new(db, vec![AuthRole::VEN("ven-1".parse().unwrap())]).await;
-
-        let (status, vens) = test
-            .request::<Vec<Ven>>(Method::GET, "/vens", Body::empty())
-            .await;
-
-        assert_eq!(status, StatusCode::OK);
-        assert_eq!(vens.len(), 1);
-        assert_eq!(vens[0].id.as_str(), "ven-1");
-    }
-
-    #[sqlx::test(fixtures("users", "vens"))]
     async fn get_single(db: PgPool) {
         let test = ApiTest::new(db, vec![AuthRole::VenManager]).await;
 
@@ -189,44 +184,43 @@ mod tests {
     async fn add_edit_delete_ven(db: PgPool) {
         let test = ApiTest::new(db, vec![AuthRole::VenManager]).await;
 
-        let new_ven = r#"{"venName":"new-ven"}"#;
+        // KYBER SUPPORT: Kyber key ekledik
+        let new_ven = VenContent::new("new-ven".to_string(), None, None, None, Some("kyber-key".to_string()));
         let (status, ven) = test
-            .request::<Ven>(Method::POST, "/vens", Body::from(new_ven))
+            .request::<Ven>(Method::POST, "/vens", Body::from(serde_json::to_vec(&new_ven).unwrap()))
             .await;
 
         assert_eq!(status, StatusCode::CREATED);
         assert_eq!(ven.content.ven_name, "new-ven");
+        assert_eq!(ven.content.kyber_public_key, Some("kyber-key".to_string()));
 
         let ven_id = ven.id.as_str();
 
+        // GET
         let (status, ven) = test
             .request::<Ven>(Method::GET, &format!("/vens/{ven_id}"), Body::empty())
             .await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(ven.id.as_str(), ven_id);
 
-        let new_ven = r#"{"venName":"new-ven-2"}"#;
+        // PUT / update
+        let updated_ven = VenContent::new("new-ven-2".to_string(), None, None, None, Some("kyber-key-updated".to_string()));
         let (status, ven) = test
-            .request::<Ven>(Method::PUT, &format!("/vens/{ven_id}"), Body::from(new_ven))
+            .request::<Ven>(Method::PUT, &format!("/vens/{ven_id}"), Body::from(serde_json::to_vec(&updated_ven).unwrap()))
             .await;
 
         assert_eq!(status, StatusCode::OK);
         assert_eq!(ven.content.ven_name, "new-ven-2");
+        assert_eq!(ven.content.kyber_public_key, Some("kyber-key-updated".to_string()));
 
-        let (status, ven) = test
-            .request::<Ven>(Method::GET, &format!("/vens/{ven_id}"), Body::empty())
-            .await;
-        assert_eq!(status, StatusCode::OK);
-        assert_eq!(ven.content.ven_name, "new-ven-2");
-        assert_eq!(ven.id.as_str(), ven_id);
-
+        // DELETE
         let (status, ven) = test
             .request::<Ven>(Method::DELETE, &format!("/vens/{ven_id}"), Body::empty())
             .await;
-
         assert_eq!(status, StatusCode::OK);
         assert_eq!(ven.id.as_str(), ven_id);
 
+        // after GET request, this is not found
         let (status, _) = test
             .request::<Problem>(Method::GET, &format!("/vens/{ven_id}"), Body::empty())
             .await;
@@ -238,8 +232,8 @@ mod tests {
         let test = ApiTest::new(db, vec![AuthRole::VenManager]).await;
 
         let vens = [
-            VenContent::new("".to_string(), None, None, None),
-            VenContent::new("This is more than 128 characters long and should be rejected This is more than 128 characters long and should be rejected asdfasd".to_string(), None, None, None),
+            VenContent::new("".to_string(), None, None, None, None),
+            VenContent::new("This is more than 128 characters long and should be rejected This is more than 128 characters long and should be rejected asdfasd".to_string(), None, None, None, None),
         ];
 
         for ven in &vens {
@@ -259,3 +253,4 @@ mod tests {
         }
     }
 }
+

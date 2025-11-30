@@ -70,7 +70,7 @@ impl PostgresVen {
             id: self.id.parse()?,
             created_date_time: self.created_date_time,
             modification_date_time: self.modification_date_time,
-            content: VenContent::new(self.ven_name, attributes, targets, resources),
+            content: VenContent::new(self.ven_name, attributes, targets, resources,None),
         })
     }
 }
@@ -344,6 +344,7 @@ mod tests {
                         label: TargetType::Private("PRIVATE_LABEL".into()),
                         values: vec!["private value".to_string()],
                     },
+                    None,
                 ])),
                 None,
             ),
@@ -355,7 +356,7 @@ mod tests {
             id: "ven-2".parse().unwrap(),
             created_date_time: "2024-07-25 08:31:10.776000 +00:00".parse().unwrap(),
             modification_date_time: "2024-07-25 08:31:10.776000 +00:00".parse().unwrap(),
-            content: VenContent::new("ven-2-name".to_string(), None, None, None),
+            content: VenContent::new("ven-2-name".to_string(), None, None, None,None),
         }
     }
 

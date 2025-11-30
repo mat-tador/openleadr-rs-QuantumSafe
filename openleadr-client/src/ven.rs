@@ -6,6 +6,8 @@ use openleadr_wire::{
     Ven,
 };
 use std::sync::Arc;
+use base64::{encode, decode};
+use crate::Client;
 
 /// A client for interacting with the data in a specific VEN and the resources contained in the VEN.
 #[derive(Debug, Clone)]
@@ -149,4 +151,36 @@ impl VenClient {
             [..] => Err(Error::DuplicateObject),
         }
     }
+
+    // KYBER implementations
+    /// Generate a Kyber keypair for this VEN
+    pub fn generate_kyber_keys_for_ven(&mut self) {
+        let (public_key, secret_key) = Client::generate_kyber_keypair();
+        println!(
+            "Create Kyber keypair for VEN '{}' .\nPublic key: {}",
+            self.id(),
+            public_key
+        );
+
+        self.data.content.kyber_public_key = Some(public_key);
+        println!("Secret key length: {}", secret_key.len());
+    }
+
+    /// Encrypt a message with the VEN's Kyber public key (demo)
+    pub fn encrypt_message_for_ven(&self, message: &[u8]) -> Option<Vec<u8>> {
+        if let Some(ref public_key) = self.data.content.kyber_public_key {
+            let ciphertext = Client::kyber_encrypt(public_key, message);
+            println!(
+                "VEN '{}' message encrypt with Kyber: {:?}",
+                self.id(),
+                ciphertext
+            );
+            Some(ciphertext)
+        } else {
+            println!("No public key for VEN '{}' !", self.id());
+            None
+        }
+    }
 }
+
+

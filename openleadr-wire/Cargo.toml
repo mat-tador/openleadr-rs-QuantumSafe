@@ -21,6 +21,9 @@ http.workspace = true
 validator.workspace = true
 iso_currency.workspace = true
 
+#for Kyber
+pqcrypto-kyber = "0.7.3"
+
 [dev-dependencies]
 serde_json.workspace = true
 quickcheck.workspace = true

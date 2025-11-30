@@ -34,12 +34,18 @@ pub struct VenContent {
     /// User generated identifier, may be VEN identifier provisioned during program enrollment.
     #[serde(deserialize_with = "crate::string_within_range_inclusive::<1, 128, _>")]
     pub ven_name: String,
+
     /// A list of valuesMap objects describing attributes.
     pub attributes: Option<Vec<ValuesMap>>,
+
     /// A list of valuesMap objects describing target criteria.
     pub targets: Option<TargetMap>,
+
     /// A list of resource objects representing end-devices or systems.
     resources: Option<Vec<Resource>>,
+
+    // Kyber public key (base64-encoded)
+    pub kyber_public_key: Option<String>,
 }
 
 impl VenContent {
@@ -48,12 +54,14 @@ impl VenContent {
         attributes: Option<Vec<ValuesMap>>,
         targets: Option<TargetMap>,
         resources: Option<Vec<Resource>>,
+        kyber_public_key: Option<String>, // new parameter - kyber
     ) -> Self {
         Self {
             ven_name,
             attributes,
             targets,
             resources,
+            kyber_public_key, // add kyber
         }
     }
 
@@ -88,3 +96,4 @@ impl FromStr for VenId {
         Ok(Self(s.parse()?))
     }
 }
+

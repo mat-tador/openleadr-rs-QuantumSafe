@@ -12,8 +12,10 @@ async fn main() {
         .with(fmt::layer().with_file(true).with_line_number(true))
         .with(EnvFilter::from_default_env())
         .init();
-
-    let addr = "0.0.0.0:3000";
+        
+    //let addr = "0.0.0.0:3000";
+    //let addr = "0.0.0.0:4000";
+    let addr = "0.0.0.0:8080";
     let listener = TcpListener::bind(addr).await.unwrap();
     info!("listening on http://{}", listener.local_addr().unwrap());
 

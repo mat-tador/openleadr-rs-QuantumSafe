@@ -45,6 +45,10 @@ sqlx = { workspace = true, optional = true }
 argon2 = { workspace = true, optional = true }
 dotenvy = { workspace = true, optional = true }
 
+#for Kyber
+pqcrypto-kyber = "0.7.3"
+pqcrypto-traits = "0.3.5"
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util"] }
 serial_test.workspace = true

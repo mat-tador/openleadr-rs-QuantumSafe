@@ -37,10 +37,26 @@ use std::{
 use tower_http::trace::TraceLayer;
 use tracing::{info, warn};
 
+////////////////////////////////////////////////////
+// KYBER ADDED
+use pqcrypto_traits::kem::{PublicKey as KyberPublicKeyTrait, SecretKey as KyberSecretKeyTrait};
+use pqcrypto_kyber::kyber768::{keypair, PublicKey, SecretKey};
+//use pqcrypto_kyber::kyber768::keypair;
+//use pqcrypto_traits::kem::{PublicKey, SecretKey};
+////////////////////////////////////////////////////
+
 #[derive(Clone, FromRef)]
 pub struct AppState {
     pub storage: Arc<dyn DataSource>,
     pub jwt_manager: Arc<JwtManager>,
+
+    ////////////////////////////////////////////////////
+    // KYBER ADDED – Kyber keys for VTN 
+    #[from_ref(skip)]
+    pub kyber_public: Vec<u8>,
+    #[from_ref(skip)]
+    pub kyber_secret: Vec<u8>,
+    ////////////////////////////////////////////////////
 }
 
 #[derive(Debug, Default, Copy, Clone)]
@@ -178,16 +194,14 @@ async fn external_oauth_from_env(key_type: Option<OAuthKeyType>) -> JwtManager {
     let oauth_jwks_location = env::var("OAUTH_JWKS_LOCATION");
     let oauth_keyfile = env::var("OAUTH_PEM");
 
-    // Try to load decoding key from environment;
-    //
-    // for HMAC by loading OAUTH_BASE64_SECRET
-    // for other key types, by looking at OAUTH_PEM
+    // Try to load decoding key from environment
     let key = match key_type {
         OAuthKeyType::Hmac => {
-            let secret = hmac_from_env().expect("OAUTH_BASE64_SECRET environment variable must be set for external OAuth provider with key type HMAC");
+            let secret = hmac_from_env().expect(
+                "OAUTH_BASE64_SECRET environment variable must be set for external OAuth provider with key type HMAC",
+            );
             Some(DecodingKey::from_secret(&secret))
         }
-
         OAuthKeyType::Rsa => match oauth_keyfile {
             Ok(rsa_file) => {
                 let pem_bytes = BufReader::new(
@@ -202,7 +216,6 @@ async fn external_oauth_from_env(key_type: Option<OAuthKeyType>) -> JwtManager {
             }
             Err(_) => None,
         },
-
         OAuthKeyType::Ec => match oauth_keyfile {
             Ok(ec_file) => {
                 let pem_bytes = BufReader::new(
@@ -217,7 +230,6 @@ async fn external_oauth_from_env(key_type: Option<OAuthKeyType>) -> JwtManager {
             }
             Err(_) => None,
         },
-
         OAuthKeyType::Ed => match oauth_keyfile {
             Ok(ed_file) => {
                 let pem_bytes = BufReader::new(
@@ -234,9 +246,11 @@ async fn external_oauth_from_env(key_type: Option<OAuthKeyType>) -> JwtManager {
         },
     };
 
-    // If no decoding key was found, then OAUTH_JWKS_LOCATION must be used
+    // If no decoding key was found, then use OAUTH_JWKS_LOCATION
     if key.is_none() && oauth_jwks_location.is_err() {
-        panic!("OAUTH_PEM or OAUTH_JWKS_LOCATION environment variable must be set for external OAuth provider with the given key type");
+        panic!(
+            "OAUTH_PEM or OAUTH_JWKS_LOCATION environment variable must be set for external OAuth provider with the given key type"
+        );
     }
 
     JwtManager::new(None, key, validation)
@@ -244,15 +258,34 @@ async fn external_oauth_from_env(key_type: Option<OAuthKeyType>) -> JwtManager {
 
 impl AppState {
     pub async fn new<S: DataSource>(storage: S) -> Self {
+
+        ////////////////////////////////////////////////////
+        // KYBER ADDED – Create Kyber keypair for VTN
+        let (pub_key, sec_key) = keypair();
+        let kyber_public = KyberPublicKeyTrait::as_bytes(&pub_key).to_vec();
+        let kyber_secret = KyberSecretKeyTrait::as_bytes(&sec_key).to_vec();
+        //let kyber_public = pub_key.as_bytes().to_vec();
+        //let kyber_secret = sec_key.as_bytes().to_vec();
+        ////////////////////////////////////////////////////
+
         let oauth_type: OAuthType = env::var("OAUTH_TYPE")
-            .inspect_err(|_|{
-            info!("Did not find OAUTH_TYPE environment variable, using internal OAuth provider.")}
-            )
-            .map(|env| env.parse()
-                .expect("Invalid value for OAUTH_TYPE environment variable. Allowed are INTERNAL and EXTERNAL."))
+            .inspect_err(|_| {
+                info!("Did not find OAUTH_TYPE environment variable, using internal OAuth provider.")
+            })
+            .map(|env| {
+                env.parse().expect(
+                    "Invalid value for OAUTH_TYPE environment variable. Allowed are INTERNAL and EXTERNAL.",
+                )
+            })
             .unwrap_or_default();
 
-        let key_type: Option<OAuthKeyType> = env::var("OAUTH_KEY_TYPE").ok().map(|k| k.parse().expect("Invalid value for OAUTH_KEY_TYPE environment variable. Allowed are HMAC, RSA, EC, and ED."));
+        let key_type: Option<OAuthKeyType> = env::var("OAUTH_KEY_TYPE")
+            .ok()
+            .map(|k| {
+                k.parse().expect(
+                    "Invalid value for OAUTH_KEY_TYPE environment variable. Allowed are HMAC, RSA, EC, and ED.",
+                )
+            });
 
         let jwt_manager = match oauth_type {
             OAuthType::Internal => internal_oauth_from_env(key_type),
@@ -262,6 +295,9 @@ impl AppState {
         Self {
             storage: Arc::new(storage),
             jwt_manager: Arc::new(jwt_manager),
+
+            kyber_public, // KYBER ADDED
+            kyber_secret, // KYBER ADDED
         }
     }
 
@@ -299,6 +335,7 @@ impl AppState {
                     .put(resource::edit)
                     .delete(resource::delete),
             );
+
         #[cfg(feature = "internal-oauth")]
         {
             router = router
@@ -316,6 +353,7 @@ impl AppState {
                     delete(user::delete_credential),
                 );
         }
+
         router
             .fallback(handler_404)
             .layer(middleware::from_fn(method_not_allowed))
@@ -569,3 +607,4 @@ mod test {
         }
     }
 }
+
