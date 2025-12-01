@@ -1,7 +1,8 @@
 services:
   vtn:
+    hostname: vtn
     build:
-      dockerfile: vtn.Dockerfile
+      dockerfile: environment.Dockerfile
       context: .
     ports:
       - ${VTN_PORT}:3000
@@ -15,6 +16,11 @@ services:
       retries: 3
     depends_on:
       - db
+    tty : true
+    stdin_open: true
+    volumes:
+      - ./:/app
+    command: ["/bin/bash"]
 
   db:
     image: ghcr.io/tweedegolf/postgres:16
@@ -33,6 +39,22 @@ services:
       - ${PG_PORT}:5432
     volumes:
       - database-data:/var/lib/postgresql/data/
+
+  client:
+    hostname: client
+    build:
+      dockerfile: environment.Dockerfile
+      context: .
+    depends_on:
+      - vtn
+    environment:
+      VTN_URL: http://vtn:3000
+      RUST_LOG: debug
+    command: ["/bin/bash"] 
+    tty : true
+    stdin_open: true
+    volumes:
+      - ./:/app
 
 volumes:
   database-data:

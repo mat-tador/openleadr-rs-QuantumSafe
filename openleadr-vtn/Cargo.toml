@@ -12,6 +12,11 @@ rust-version.workspace = true
 keywords.workspace = true
 
 [dependencies]
+# OpenSSL bindings (necessario per SslAcceptor nel codice sorgente)
+openssl = "0.10" 
+
+# Axum-server per il binding HTTPS, con la feature specifica per OpenSSL
+axum-server = { version = "0.7", features = ["tls-openssl"] }
 openleadr-wire.workspace = true
 
 serde.workspace = true
