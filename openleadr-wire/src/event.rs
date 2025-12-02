@@ -30,6 +30,7 @@ pub struct Event {
     #[serde(flatten)]
     #[validate(nested)]
     pub content: EventContent,
+    pub signature: Option<String>,
 }
 
 #[skip_serializing_none]

@@ -111,6 +111,7 @@ impl TryFrom<PostgresEvent> for Event {
                 intervals: serde_json::from_value(value.intervals)
                     .map_err(AppError::SerdeJsonInternalServerError)?,
             },
+            signature   : None,
         })
     }
 }

@@ -1,4 +1,13 @@
 use std::sync::Arc;
+use std::fs;
+use std::time::Instant; // <--- Importante per il timing
+use tracing::{trace, error, info};
+use base64::{Engine, engine::general_purpose};
+
+use p256::{
+    ecdsa::{SigningKey, signature::Signer, Signature},
+    pkcs8::DecodePrivateKey,
+};
 
 use axum::{
     extract::{Path, State},
@@ -6,7 +15,6 @@ use axum::{
     Json,
 };
 use serde::Deserialize;
-use tracing::{info, trace};
 use validator::Validate;
 
 use openleadr_wire::{
@@ -20,6 +28,7 @@ use crate::{
     data_source::EventCrud,
     error::AppError,
     jwt::{BusinessUser, User},
+    state::AppState,
 };
 
 pub async fn get_all(
@@ -29,8 +38,47 @@ pub async fn get_all(
 ) -> AppResponse<Vec<Event>> {
     trace!(?query_params);
 
-    let events = event_source.retrieve_all(&query_params, &user).await?;
+    let mut events = event_source.retrieve_all(&query_params, &user).await?;
     trace!("retrieved {} events", events.len());
+
+    // --- LOGICA DI FIRMA CON TIMING ---
+    let pem_path = "certs/classic/server_ec_key.pem"; 
+    
+    match fs::read_to_string(pem_path) {
+        Ok(pem_str) => {
+            match SigningKey::from_pkcs8_pem(&pem_str) {
+                Ok(signing_key) => {
+                    for event in events.iter_mut() {
+                        event.signature = None; // Reset per pulizia
+                        
+                        // ⏱️ AVVIO CRONOMETRO
+                        let start_time = Instant::now();
+
+                        if let Ok(event_json) = serde_json::to_string(&event) {
+                             // 1. FIRMA (include hashing implicito)
+                             let signature: Signature = signing_key.sign(event_json.as_bytes());
+                             
+                             // 2. ENCODE Base64
+                             let sig_b64 = general_purpose::STANDARD.encode(signature.to_bytes());
+                             
+                             // ⏱️ STOP CRONOMETRO
+                             let duration = start_time.elapsed();
+
+                             // Stampiamo il tempo preciso (es. "145.2µs")
+                             info!("Event {}: Signed in {:.2?}⏱️", event.id, duration);
+
+                             event.signature = Some(sig_b64);
+                        } else {
+                            error!("Impossibile serializzare evento {} per la firma", event.id);
+                        }
+                    }
+                },
+                Err(e) => error!("❌ ERRORE CHIAVE: {}", e),
+            }
+        },
+        Err(e) => error!("❌ ERRORE FILE: {}", e),
+    }
+    // ----------------------------------
 
     Ok(Json(events))
 }
