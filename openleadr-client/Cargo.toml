@@ -48,6 +48,7 @@ hyper = "1.8.1"
 axum.workspace = true
 bytes = "1.11.0"
 http.workspace = true
+p256 = "0.13.2"
 
 
 [dev-dependencies]

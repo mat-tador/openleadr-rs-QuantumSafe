@@ -90,6 +90,15 @@ pub(crate) use openleadr_wire::{
     Program,
 };
 
+
+use std::fs;
+use base64::{Engine, engine::general_purpose};
+use p256::{
+    ecdsa::{Signature, VerifyingKey, signature::Verifier},
+    pkcs8::DecodePublicKey,
+};
+use tracing::{info, error, warn};
+
 #[async_trait]
 /// Abstracts the implementation used for actual requests.
 ///
@@ -554,32 +563,110 @@ impl Client {
     /// Low-level operation that gets a list of events from the VTN with the given query parameters
     ///
     /// To automatically iterate pages, use [`self.get_event_list`]
-    pub async fn get_events(
+    /// 
+    
+
+  pub async fn get_events(
         &self,
         program_id: Option<&ProgramId>,
         filter: Filter<'_, impl AsRef<str>>,
         pagination: PaginationOptions,
     ) -> Result<Vec<EventClient>> {
-        // convert query params
+        
+        // 1. Costruzione Query
         let skip_str = pagination.skip.to_string();
         let limit_str = pagination.limit.to_string();
-        // insert into query params
         let mut query: Vec<(&str, &str)> = vec![("skip", &skip_str), ("limit", &limit_str)];
-
         query.extend_from_slice(filter.to_query_params().as_slice());
-
         if let Some(program_id) = program_id {
             query.push(("programID", program_id.as_str()));
         }
 
-        // send request and return response
-        let events: Vec<Event> = self.client_ref.get("events", &query).await?;
-        Ok(events
+        // 2. Richiesta al Server
+        let mut events: Vec<Event> = self.client_ref.get("events", &query).await?;
+        
+        // DEBUG: Vediamo se siamo arrivati qui
+        // println!("DEBUG: Ricevuti {} eventi dal server. Inizio verifica...", events.len());
+
+        // 3. Caricamento Chiave Pubblica
+        // ATTENZIONE: Assicurati che questo percorso sia corretto rispetto a dove lanci il comando cargo run!
+        let pub_key_path = "certs/classic/server_public_key.pem";
+        
+        let pem_str = match fs::read_to_string(pub_key_path) {
+            Ok(s) => s,
+            Err(e) => {
+                // STAMPA L'ERRORE IN FACCIA
+                println!("\n❌ ERRORE CRITICO CLIENT: Impossibile leggere la chiave pubblica in '{}'", pub_key_path);
+                println!("   Dettaglio: {}", e);
+                println!("   --> Salto la verifica e restituisco gli eventi non verificati.\n");
+                return Ok(events.into_iter().map(|e| EventClient::from_event(self.client_ref.clone(), e)).collect());
+            }
+        };
+
+        let public_key = match VerifyingKey::from_public_key_pem(&pem_str) {
+            Ok(k) => k,
+            Err(e) => {
+                println!("\n❌ ERRORE CRITICO CLIENT: Formato chiave pubblica errato!");
+                println!("   Dettaglio: {}", e);
+                return Ok(events.into_iter().map(|e| EventClient::from_event(self.client_ref.clone(), e)).collect());
+            }
+        };
+                
+        // 4. Ciclo Verifica
+        let valid_events: Vec<Event> = events.into_iter().filter_map(|mut event| {
+            
+            let signature_b64 = match event.signature.take() {
+                Some(s) => s,
+                None => {
+                    println!("⚠️ WARN: L'evento {} non ha firma. Impossibile verificare.", event.id);
+                    return None; 
+                }
+            };
+
+            let start_time = Instant::now();
+
+            // A. Serializza
+            let event_bytes = match serde_json::to_vec(&event) {
+                Ok(b) => b,
+                Err(_) => { println!("❌ Errore serializzazione client"); return None; }
+            };
+
+            // B. Decode Base64
+            let signature_bytes = match general_purpose::STANDARD.decode(&signature_b64) {
+                Ok(b) => b,
+                Err(_) => { println!("❌ Errore decode B64 client"); return None; }
+            };
+
+            // C. Parse Signature
+            let signature = match Signature::from_slice(&signature_bytes) {
+                Ok(s) => s,
+                Err(_) => { println!("❌ Errore formato firma client"); return None; }
+            };
+
+            // D. VERIFICA MATEMATICA
+            if public_key.verify(&event_bytes, &signature).is_ok() {
+                let duration = start_time.elapsed();
+                
+                // STAMPA DI SUCCESSO
+                println!("✅ VERIFICA OK: Evento {} autenticato in {:.2?}", event.id, duration);
+                
+                event.signature = Some(signature_b64);
+                return Some(event);
+            } else {
+                println!("❌ VERIFICA FALLITA: La firma per l'evento {} non è valida!", event.id);
+                return None; 
+            }
+
+        }).collect();
+
+        // 5. Conversione finale
+        Ok(valid_events
             .into_iter()
             .map(|event| EventClient::from_event(self.client_ref.clone(), event))
             .collect())
     }
 
+    
     /// Get all events from the VTN with the given query parameters.
     ///
     /// It automatically tries to iterate pages where necessary.
