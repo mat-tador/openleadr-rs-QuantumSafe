@@ -3,6 +3,10 @@ use std::fs;
 use std::time::Instant; // <--- Importante per il timing
 use tracing::{trace, error, info};
 use base64::{Engine, engine::general_purpose};
+use std::io::Write;
+use std::fs::OpenOptions;
+use std::env;
+use std::process::{Command, Stdio};
 
 use p256::{
     ecdsa::{SigningKey, signature::Signer, Signature},
@@ -36,49 +40,99 @@ pub async fn get_all(
     ValidatedQuery(query_params): ValidatedQuery<QueryParams>,
     user: User,
 ) -> AppResponse<Vec<Event>> {
-    trace!(?query_params);
-
+    
+    // 1. Recupera eventi
     let mut events = event_source.retrieve_all(&query_params, &user).await?;
     trace!("retrieved {} events", events.len());
 
-    // --- LOGICA DI FIRMA CON TIMING ---
-    let pem_path = "certs/classic/server_ec_key.pem"; 
-    
-    match fs::read_to_string(pem_path) {
-        Ok(pem_str) => {
-            match SigningKey::from_pkcs8_pem(&pem_str) {
-                Ok(signing_key) => {
-                    for event in events.iter_mut() {
-                        event.signature = None; // Reset per pulizia
+    // 2. DECIDI ALGORITMO
+    let algo = env::var("SIGNATURE_ALGO").unwrap_or_else(|_| "ECC".to_string());
+    let csv_filename = format!("{}_signing_time.csv", algo);
+
+    if algo == "DILITHIUM" {
+        // ==========================================
+        // CASO 1: POST-QUANTUM (DILITHIUM3 via File)
+        // ==========================================
+        info!("🔏 Signing with DILITHIUM (OpenSSL PQC)");
+        
+        let openssl_bin = "/usr/local/openssl-pq/bin/openssl";
+        let key_path = "certs/pqc/server_key.pem";
+
+        for event in events.iter_mut() {
+            event.signature = None;
+            
+            if let Ok(json) = serde_json::to_string(&event) {
+                // ⏱️ START
+                let start = Instant::now();
+
+                // A. Scriviamo i dati su un file temporaneo
+                let tmp_file_in = format!("/tmp/sign_in_{}.json", event.id);
+                if let Err(e) = fs::write(&tmp_file_in, json.as_bytes()) {
+                    error!("Impossibile scrivere file temp: {}", e);
+                    continue;
+                }
+
+                // B. Eseguiamo OpenSSL leggendo dal FILE (-in) invece che da stdin
+                let child = Command::new(openssl_bin)
+                    .arg("pkeyutl").arg("-sign").arg("-inkey").arg(key_path)
+                    .arg("-in").arg(&tmp_file_in) // <--- LEGGE DA FILE
+                    .arg("-provider-path").arg("/usr/local/openssl-pq/lib/ossl-modules")
+                    .arg("-provider").arg("oqsprovider")
+                    .arg("-provider").arg("default")
+                    .output(); // .output() aspetta la fine e cattura tutto
+
+                // ⏱️ STOP
+                let duration = start.elapsed();
+
+                // C. Pulizia file temp
+                let _ = fs::remove_file(tmp_file_in);
+
+                match child {
+                    Ok(output) if output.status.success() => {
+                        let sig_b64 = general_purpose::STANDARD.encode(&output.stdout);
+                        event.signature = Some(sig_b64);
                         
-                        // ⏱️ AVVIO CRONOMETRO
-                        let start_time = Instant::now();
-
-                        if let Ok(event_json) = serde_json::to_string(&event) {
-                             // 1. FIRMA (include hashing implicito)
-                             let signature: Signature = signing_key.sign(event_json.as_bytes());
-                             
-                             // 2. ENCODE Base64
-                             let sig_b64 = general_purpose::STANDARD.encode(signature.to_bytes());
-                             
-                             // ⏱️ STOP CRONOMETRO
-                             let duration = start_time.elapsed();
-
-                             // Stampiamo il tempo preciso (es. "145.2µs")
-                             info!("Event {}: Signed in {:.2?}⏱️", event.id, duration);
-
-                             event.signature = Some(sig_b64);
-                        } else {
-                            error!("Impossibile serializzare evento {} per la firma", event.id);
+                        // CSV
+                        if let Ok(mut file) = OpenOptions::new().create(true).write(true).append(true).open(&csv_filename) {
+                             let _ = writeln!(file, "{},{}", event.id, duration.as_micros());
                         }
-                    }
-                },
-                Err(e) => error!("❌ ERRORE CHIAVE: {}", e),
+                        info!("Event {}: Signed (Dilithium) in {:?}", event.id, duration);
+                    },
+                    Ok(output) => {
+                        let err = String::from_utf8_lossy(&output.stderr);
+                        error!("OpenSSL Error: {}", err);
+                    },
+                    Err(e) => error!("Failed to run OpenSSL: {}", e),
+                }
             }
-        },
-        Err(e) => error!("❌ ERRORE FILE: {}", e),
+        }
+
+    } else {
+        // ==========================================
+        // CASO 2: CLASSIC ECC (P-256)
+        // ==========================================
+        // ... (IL CODICE ECC RIMANE UGUALE A PRIMA) ...
+        info!("🔏 Signing with ECC P-256");
+        let pem_path = "certs/classic/server_ec_key.pem";
+        if let Ok(pem_str) = fs::read_to_string(pem_path) {
+            if let Ok(signing_key) = SigningKey::from_pkcs8_pem(&pem_str) {
+                for event in events.iter_mut() {
+                    event.signature = None;
+                    if let Ok(json) = serde_json::to_string(&event) {
+                        let start = Instant::now();
+                        let signature: Signature = signing_key.sign(json.as_bytes());
+                        let duration = start.elapsed();
+                        let sig_b64 = general_purpose::STANDARD.encode(signature.to_bytes());
+                        event.signature = Some(sig_b64);
+                        if let Ok(mut file) = OpenOptions::new().create(true).write(true).append(true).open(&csv_filename) {
+                            let _ = writeln!(file, "{},{}", event.id, duration.as_micros());
+                        }
+                        info!("Event {}: Signed (ECC) in {:?}", event.id, duration);
+                    }
+                }
+            } else { error!("Chiave ECC corrotta"); }
+        } else { error!("Chiave ECC non trovata"); }
     }
-    // ----------------------------------
 
     Ok(Json(events))
 }

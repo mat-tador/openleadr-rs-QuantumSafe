@@ -68,7 +68,10 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::sync::RwLock;
-
+use std::fs::OpenOptions;
+use std::io::Write;
+use std::env;
+use std::process::{Command, Stdio}; // <--- Importante per Dilithium
 use reqwest::{Method, RequestBuilder, Response};
 use url::Url;
 
@@ -584,77 +587,121 @@ impl Client {
 
         // 2. Richiesta al Server
         let mut events: Vec<Event> = self.client_ref.get("events", &query).await?;
-        
-        // DEBUG: Vediamo se siamo arrivati qui
-        // println!("DEBUG: Ricevuti {} eventi dal server. Inizio verifica...", events.len());
 
-        // 3. Caricamento Chiave Pubblica
-        // ATTENZIONE: Assicurati che questo percorso sia corretto rispetto a dove lanci il comando cargo run!
-        let pub_key_path = "certs/classic/server_public_key.pem";
-        
-        let pem_str = match fs::read_to_string(pub_key_path) {
-            Ok(s) => s,
-            Err(e) => {
-                // STAMPA L'ERRORE IN FACCIA
-                println!("\n❌ ERRORE CRITICO CLIENT: Impossibile leggere la chiave pubblica in '{}'", pub_key_path);
-                println!("   Dettaglio: {}", e);
-                println!("   --> Salto la verifica e restituisco gli eventi non verificati.\n");
-                return Ok(events.into_iter().map(|e| EventClient::from_event(self.client_ref.clone(), e)).collect());
-            }
-        };
+        // 3. Setup Algoritmo e CSV
+        let algo = env::var("SIGNATURE_ALGO").unwrap_or_else(|_| "ECC".to_string());
+        let csv_filename = format!("{}_verification_time.csv", algo);
 
-        let public_key = match VerifyingKey::from_public_key_pem(&pem_str) {
-            Ok(k) => k,
-            Err(e) => {
-                println!("\n❌ ERRORE CRITICO CLIENT: Formato chiave pubblica errato!");
-                println!("   Dettaglio: {}", e);
-                return Ok(events.into_iter().map(|e| EventClient::from_event(self.client_ref.clone(), e)).collect());
-            }
-        };
-                
+        // Percorsi Chiavi
+        let ecc_pub_path = "certs/classic/server_public_key.pem";
+        let pqc_pub_path = "certs/pqc/server_public_key.pem"; // <--- Assicurati di averlo creato!
+
         // 4. Ciclo Verifica
         let valid_events: Vec<Event> = events.into_iter().filter_map(|mut event| {
             
+            // A. Estrai la firma
             let signature_b64 = match event.signature.take() {
                 Some(s) => s,
                 None => {
-                    println!("⚠️ WARN: L'evento {} non ha firma. Impossibile verificare.", event.id);
+                    println!("⚠️ Evento {} senza firma. Skippato.", event.id);
                     return None; 
                 }
             };
 
-            let start_time = Instant::now();
-
-            // A. Serializza
+            // B. Serializza i dati (senza firma)
             let event_bytes = match serde_json::to_vec(&event) {
                 Ok(b) => b,
-                Err(_) => { println!("❌ Errore serializzazione client"); return None; }
+                Err(_) => { println!("❌ Errore serializzazione"); return None; }
             };
 
-            // B. Decode Base64
-            let signature_bytes = match general_purpose::STANDARD.decode(&signature_b64) {
-                Ok(b) => b,
-                Err(_) => { println!("❌ Errore decode B64 client"); return None; }
-            };
+            let mut is_valid = false;
+            let mut duration_micros = 0;
 
-            // C. Parse Signature
-            let signature = match Signature::from_slice(&signature_bytes) {
-                Ok(s) => s,
-                Err(_) => { println!("❌ Errore formato firma client"); return None; }
-            };
-
-            // D. VERIFICA MATEMATICA
-            if public_key.verify(&event_bytes, &signature).is_ok() {
-                let duration = start_time.elapsed();
+            // --- INIZIO LOGICA MISTA ---
+            if algo == "DILITHIUM" {
+                // ==========================================
+                // CASO 1: POST-QUANTUM (DILITHIUM via File)
+                // ==========================================
                 
-                // STAMPA DI SUCCESSO
-                println!("✅ VERIFICA OK: Evento {} autenticato in {:.2?}", event.id, duration);
+                if let Ok(sig_bytes) = general_purpose::STANDARD.decode(&signature_b64) {
+                    
+                    // 1. File Temporanei per FIRMA e DATI
+                    let sig_tmp_file = format!("/tmp/sig_{}.bin", event.id);
+                    let data_tmp_file = format!("/tmp/data_{}.json", event.id);
+
+                    // Scrittura su disco
+                    let _ = fs::write(&sig_tmp_file, &sig_bytes);
+                    let _ = fs::write(&data_tmp_file, &event_bytes);
+
+                    let start_time = Instant::now();
+
+                    // Eseguiamo OpenSSL usando i FILE (-in e -sigfile)
+                    let status = Command::new("/usr/local/openssl-pq/bin/openssl")
+                        .arg("pkeyutl").arg("-verify")
+                        .arg("-pubin").arg("-inkey").arg(pqc_pub_path)
+                        .arg("-sigfile").arg(&sig_tmp_file)
+                        .arg("-in").arg(&data_tmp_file) // <--- LEGGE DA FILE
+                        .arg("-provider-path").arg("/usr/local/openssl-pq/lib/ossl-modules")
+                        .arg("-provider").arg("oqsprovider")
+                        .arg("-provider").arg("default")
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::null())
+                        .status(); // .status() aspetta la fine
+
+                    if let Ok(s) = status {
+                        if s.success() {
+                            is_valid = true;
+                        }
+                    }
+
+                    // Stop Timer
+                    duration_micros = start_time.elapsed().as_micros();
+
+                    // Pulizia file temp
+                    let _ = fs::remove_file(sig_tmp_file);
+                    let _ = fs::remove_file(data_tmp_file);
+                }
+
+            } else {
+                // ==========================================
+                // CASO 2: ECC P-256 (Nativo Rust)
+                // ==========================================
                 
+                // Carichiamo la chiave (inefficiente farlo nel loop, ma robusto per test)
+                if let Ok(pem_str) = fs::read_to_string(ecc_pub_path) {
+                    if let Ok(public_key) = VerifyingKey::from_public_key_pem(&pem_str) {
+                        if let Ok(signature_bytes) = general_purpose::STANDARD.decode(&signature_b64) {
+                            if let Ok(signature) = Signature::from_slice(&signature_bytes) {
+                                
+                                let start_time = Instant::now();
+                                
+                                if public_key.verify(&event_bytes, &signature).is_ok() {
+                                    is_valid = true;
+                                }
+                                
+                                duration_micros = start_time.elapsed().as_micros();
+                            }
+                        }
+                    } else { println!("❌ Chiave Pubblica ECC corrotta"); }
+                } else { println!("❌ Chiave Pubblica ECC non trovata: {}", ecc_pub_path); }
+            }
+            // ---------------------------
+
+            if is_valid {
+                println!("✅ Event {}: Verified ({}) in {} µs", event.id, algo, duration_micros);
+                
+                // --- SCRITTURA CSV ---
+                if let Ok(mut file) = OpenOptions::new().create(true).write(true).append(true).open(&csv_filename) {
+                    if let Err(e) = writeln!(file, "{},{}", event.id, duration_micros) {
+                        println!("❌ Errore scrittura CSV: {}", e);
+                    }
+                }
+
                 event.signature = Some(signature_b64);
                 return Some(event);
             } else {
-                println!("❌ VERIFICA FALLITA: La firma per l'evento {} non è valida!", event.id);
-                return None; 
+                println!("❌ Event {}: VERIFICA FALLITA ({})!", event.id, algo);
+                return None;
             }
 
         }).collect();
@@ -666,7 +713,6 @@ impl Client {
             .collect())
     }
 
-    
     /// Get all events from the VTN with the given query parameters.
     ///
     /// It automatically tries to iterate pages where necessary.
