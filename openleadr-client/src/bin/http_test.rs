@@ -38,8 +38,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build()?;
 
     let client = Client::with_details(
-        "https://vtn:3000/".try_into()?, // Nota: localhost per test locale
-        "https://vtn:3000/auth/token".try_into()?,
+        "http://vtn:3000/".try_into()?, // Nota: localhost per test locale
+        "http://vtn:3000/auth/token".try_into()?,
         reqwest_client,
         Some(ClientCredentials::new(
             "admin".to_string(),

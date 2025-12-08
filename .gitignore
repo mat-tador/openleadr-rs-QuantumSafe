@@ -3,3 +3,4 @@
 oadr*.yaml
 *swp
 /certs/
+/results/
