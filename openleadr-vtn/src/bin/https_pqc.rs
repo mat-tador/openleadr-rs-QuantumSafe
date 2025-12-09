@@ -1,10 +1,10 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
-use axum_server::tls_openssl::OpenSSLConfig;
-use openssl::ssl::{SslAcceptor, SslFiletype, SslMethod};
+use openssl::ssl::{SslAcceptor, SslFiletype, SslMethod, SslVersion, SslVerifyMode};
 use openssl::provider::Provider;
+use axum_server::tls_openssl::OpenSSLConfig;
 
 #[cfg(feature = "postgres")]
 use openleadr_vtn::data_source::PostgresStorage;
@@ -14,46 +14,66 @@ use openleadr_vtn::{data_source::Migrate, state::AppState};
 async fn main() {
     tracing_subscriber::registry()
         .with(fmt::layer().with_file(true).with_line_number(true))
-        .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
+        .with(EnvFilter::from_default_env())
         .init();
 
-    // 1. CARICAMENTO PROVIDER (Fondamentale per Kyber)
-    openssl::init();
-    let _pqc = Provider::try_load(None, "oqsprovider", true)
-        .expect("❌ ERRORE: oqsprovider non trovato. Hai settato OPENSSL_MODULES?");
-    let _def = Provider::try_load(None, "default", true).unwrap();
-    info!("✅ OQS Provider Attivo.");
+    // 1. CARICAMENTO PROVIDER
+    // Carichiamo OQS. Se fallisce, il log ci avvisa ma non crasha tutto subito.
+    if let Err(e) = Provider::try_load(None, "oqsprovider", true) {
+        warn!("⚠️ OQS Provider non caricato: {}. Kyber non funzionerà.", e);
+    } else {
+        info!("✅ OQS Provider caricato!");
+    }
+    // Carichiamo il default per le operazioni base
+    let _default = Provider::try_load(None, "default", true);
 
-    let mut acceptor = SslAcceptor::mozilla_intermediate(SslMethod::tls()).unwrap();
+    let mut builder = SslAcceptor::mozilla_intermediate(SslMethod::tls_server())
+        .expect("Impossibile creare builder");
 
-    // 2. CARICAMENTO CERTIFICATI ECC (Standard)
-    // Usiamo quelli dalla cartella 'classic' che sappiamo funzionare per l'Handshake.
-    info!("📂 Carico Certificati ECC (Identity)...");
-    acceptor.set_private_key_file("certs/classic/server_key.pem", SslFiletype::PEM).unwrap();
-    acceptor.set_certificate_chain_file("certs/classic/server_cert.pem").unwrap();
-    acceptor.check_private_key().unwrap();
+    // 2. SETUP SICUREZZA
+    builder.set_security_level(0);
+    builder.set_verify(SslVerifyMode::NONE);
+    
+    // TLS 1.3 Obbligatorio (ECDSA + Kyber lavorano bene qui)
+    builder.set_min_proto_version(Some(SslVersion::TLS1_3)).unwrap();
 
-    // 3. LA MAGIA QUANTISTICA: Forziamo Kyber
-    // CORREZIONE: Usiamo "kyber768" (nome compatibile liboqs 0.10.1)
-    info!("🛡️  Attivo Key Exchange Post-Quantum...");
-    acceptor.set_groups_list("kyber768:x25519_kyber768:X25519")
-        .expect("❌ Errore: Il provider non supporta kyber768.");
+    // 3. GRUPPI (Key Exchange)
+    // Qui definiamo COSA usiamo per scambiare le chiavi.
+    // - x25519_kyber768: Il nostro obiettivo PQC
+    // - prime256v1: NECESSARIO per leggere il certificato ECDSA!
+    // - x25519: Fallback
+    let groups = "x25519_kyber768:kyber768:prime256v1:x25519";
+    builder.set_groups_list(groups).expect("Errore setup gruppi");
+    info!("✅ Gruppi impostati: {}", groups);
 
-    let ssl_config = OpenSSLConfig::from_acceptor(Arc::new(acceptor.build()));
+    // 4. RIMOSSO set_sigalgs_list (IMPORTANTE!)
+    // Lasciamo che OpenSSL scelga automaticamente ECDSA
+
+    // 5. CARICAMENTO CERTIFICATI (ECDSA)
+    let cert_path = "/app/certs/pqc/ec_cert.pem";
+    let key_path = "/app/certs/pqc/ec_key.pem";
+    
+    info!("Caricamento certificati ECDSA da: {}", cert_path);
+    builder.set_private_key_file(key_path, SslFiletype::PEM).expect("Chiave non trovata");
+    builder.set_certificate_chain_file(cert_path).expect("Certificato non trovato");
+
+    // Avvio Server
+    let acceptor = builder.build();
+    let ssl_config = OpenSSLConfig::from_acceptor(Arc::new(acceptor));
     let addr = SocketAddr::from(([0, 0, 0, 0], 3000));
     
-    info!("🚀 VTN HYBRID SERVER attivo su HTTPS://{} (Auth: ECC, KeyEx: Kyber)", addr);
+    info!("🚀 VTN in ascolto su HTTPS://{}", addr);
 
-    // 4. AVVIO NORMALE
     #[cfg(feature = "postgres")]
     let storage = PostgresStorage::from_env().await.unwrap();
+    #[cfg(not(feature = "postgres"))]
+    compile_error!("No storage backend selected.");
+
+    if let Err(e) = storage.migrate().await { warn!("DB: {}", e); }
     let state = AppState::new(storage).await;
     let app = state.into_router();
 
-    if let Err(e) = axum_server::bind_openssl(addr, ssl_config)
+    axum_server::bind_openssl(addr, ssl_config)
         .serve(app.into_make_service())
-        .await 
-    {
-        error!("🔥 Server crashato: {}", e);
-    }
+        .await.unwrap();
 }

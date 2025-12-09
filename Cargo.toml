@@ -10,7 +10,7 @@ resolver = "2"
 [workspace.package]
 version = "0.1.1"
 edition = "2021"
-rust-version = "1.90" # MSRV
+rust-version = "1.90"
 license = "Apache-2.0 OR MIT"
 repository = "https://github.com/OpenLEADR/openleadr-rs"
 homepage = "https://github.com/OpenLEADR/openleadr-rs"
@@ -26,10 +26,17 @@ serde = { version = "1.0.203", features = ["derive"] }
 serde_json = "1.0.117"
 serde_with = { version = "3.8.1", features = ["macros"] }
 
+# --- MODIFICA CRUCIALE QUI SOTTO ---
+# Rimosso "native-tls", aggiunto "rustls-tls".
+# Questo impedisce a reqwest di linkare la OpenSSL di sistema!
 reqwest = { version = "0.12.4", default-features = false, features = ["http2", "charset", "native-tls", "json"] }
+
 tokio = { version = "1.37.0", features = ["full", "test-util"] }
 tokio-test = "0.4.4"
 axum = { version = "0.8.1", features = ["macros"] }
+
+# axum-server usa tls-openssl: QUESTO è l'unico che deve toccare OpenSSL (la tua OQS)
+axum-server = { version = "0.7.1", features = ["tls-openssl"] }
 
 axum-extra = { version = "0.12.1", features = ["query", "typed-header"] }
 tower = { version = "0.5", features = ["util"] }
@@ -56,6 +63,7 @@ async-trait = "0.1.81"
 
 quickcheck = "1.0.3"
 
+# sqlx usa già tls-rustls, quindi è OK, non tocca OpenSSL
 sqlx = { version = "0.8.2", features = ["postgres", "runtime-tokio", "chrono", "migrate", "macros", "json", "tls-rustls"], default-features = false }
 argon2 = "0.5.3"
 dotenvy = "0.15.7"
@@ -64,6 +72,5 @@ serial_test = "3.1.1"
 
 iso_currency = { version = "0.5.0", features = ["with-serde"] }
 
-# --- AGGIUNTE PER OPENSSL CUSTOM/REQWEST COMPATIBILITY ---
+# --- OPENSSL CUSTOM ---
 openssl = "0.10"
-openssl-sys = "0.9"

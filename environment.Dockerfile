@@ -75,14 +75,14 @@ RUN find . -name "oqsprovider.so" -exec cp {} /tmp/oqsprovider.so \; && \
 # ====================================================================
 FROM ubuntu:24.04 AS final
 
-ENV DEBIAN_FRONTEND=noninteractive
-ENV OPENSSL_INSTALL_DIR=/usr/local/openssl-pq
+    ENV DEBIAN_FRONTEND=noninteractive
+    ENV OPENSSL_INSTALL_DIR=/usr/local/openssl-pq
 
 RUN apt-get update && apt-get install -y \
     curl build-essential pkg-config libssl-dev \
     postgresql-client libpq-dev hyperfine \
     iputils-ping iproute2 net-tools iperf3 \
-    tcpdump wget \
+    tcpdump wget nano zlib1g-dev\
     git cmake ninja-build autoconf libtool \
     && rm -rf /var/lib/apt/lists/*
 
